@@ -131,6 +131,95 @@ def find_a_candidate(model, likelihood, x_init, lb, ub):
     x = transform_to(constraint)(unconstrained_x)
     return x.detach()
 
+# BO with expected improvement heuristic
+def batched_evaluation(model, likelihood, x, i = 0, partition = 20):
+    model.eval()
+    likelihood.eval()
+    start = i * x.shape[0]//partition
+    end = (i+1) * x.shape[0]//partition
+    with gpytorch.settings.max_preconditioner_size(10), torch.no_grad():
+        with gpytorch.settings.use_toeplitz(False), gpytorch.settings.max_root_decomposition_size(30), gpytorch.settings.fast_pred_var():
+            preds = model(x[start:end])
+    torch.cuda.empty_cache()
+    return torch.min(preds.mean)
+    
+# Define Acquisition function
+# TODO: the original paper uses expected imporvement
+def log_expected_improvement(model, likelihood, x, previous_best, device):
+    model.to(device).eval()
+    likelihood.to(device).eval()
+    with gpytorch.settings.max_root_decomposition_size(30), gpytorch.settings.fast_pred_var():
+        preds = model(x)
+    mu, variance = preds.mean, preds.variance
+    delta_x = previous_best - mu
+    m = torch.distributions.normal.Normal(torch.tensor([0.0]).to(device), torch.tensor([1.0]).to(device))
+    ei = torch.max(delta_x, 0)[0] + variance * torch.exp(m.log_prob(delta_x/variance)) - torch.abs(delta_x) * m.cdf(delta_x/variance)
+    #log_ei = torch.log(ei)
+    #print("log_ei:", log_ei.item())
+    #print("ei:",ei.item(),"mu:",mu.item())
+    return -ei
+
+
+def find_a_candidate_ei(model, likelihood, x_init, lb, ub, previous_best, device):
+    # transform x to an unconstrained domain
+    constraint = constraints.interval(lb, ub)
+    #print(x_init)
+    unconstrained_x_init = transform_to(constraint).inv(x_init)
+    #print(unconstrained_x_init)
+    unconstrained_x = unconstrained_x_init.clone().detach().requires_grad_(True)
+    
+    # WARNING: this is a memory intensive optimizer
+    # TODO: Maybe try other gradient-based iterative methods
+    minimizer = optim.LBFGS([unconstrained_x], max_iter=50)
+
+    def closure():
+        minimizer.zero_grad()
+        x = transform_to(constraint)(unconstrained_x)
+        y = log_expected_improvement(model, likelihood, x, previous_best, device)
+        #y = lower_confidence_bound(unconstrained_x)
+        #print(autograd.grad(y, unconstrained_x))
+        #print(y)
+        autograd.backward(unconstrained_x, autograd.grad(y, unconstrained_x))
+        return y
+
+    minimizer.step(closure)
+    # after finding a candidate in the unconstrained domain,
+    # convert it back to original domain.
+    x = transform_to(constraint)(unconstrained_x)
+    return x.detach()
+
+def next_x_ei(model, likelihood, X_train, lb, ub, num_candidates_each_x=5, num_x=60, device = "cuda"):
+    found_x=[]
+    lb = lb.to(device)
+    ub = ub.to(device)
+    x_init = model.train_inputs[0][-1:].to(device)
+    previous_best = torch.Tensor([0]).to(device)
+    for i in range(20):
+        previous_best = torch.min(previous_best, batched_evaluation(model.to(device), likelihood.to(device), X_train.to(device), i))
+    print("previous best:", previous_best)
+    
+    for j in range(num_x):
+        candidates = []
+        values = []
+        for i in range(num_candidates_each_x):
+            x = find_a_candidate_ei(model, likelihood, x_init, lb, ub, previous_best, device)
+            y = log_expected_improvement(model, likelihood, x, previous_best, device)
+            candidates.append(x)
+            values.append(y)
+            # require another random initialization
+            random_index = np.random.randint(0,len(model.train_inputs[0]))
+            x_init = model.train_inputs[0][random_index:random_index + 1].to(device)
+        new_values = torch.cat(values)
+        new_values[torch.isnan(new_values)] = 1000.
+        argmin = torch.min(new_values, dim=0)[1].item()
+        min_score = torch.min(new_values, dim=0)[0].item()
+        print("min_score:", min_score)
+        found_x.append(candidates[argmin])
+        #x_init=found_x[-1]
+        random_index = np.random.randint(0,len(model.train_inputs[0]))
+        x_init = model.train_inputs[0][random_index:random_index + 1].to(device)
+    return found_x
+
 # Inner BO loop
 def next_x(model, likelihood, lb, ub, num_candidates_each_x=5, num_x=60, device = "cuda"):
     found_x=[]
@@ -227,6 +316,48 @@ def compute_mol_score(s):
     #y_new = -current_log_P_value_normalized
     return score
 
+
+def BayesianOpt_ei(JT_model, model, likelihood, max_iteration = 50, device = "cuda"):
+    lb = torch.min(model.train_inputs[0], dim = 0)[0]
+    ub = torch.max(model.train_inputs[0], dim = 0)[0]
+    valid_s = []
+    mol_score = []
+    for iteration in range(max_iteration):
+        xmin = next_x_ei(model, likelihood, model.train_inputs[0], lb,ub,5,1, device)
+        valid_smiles=[]
+        scores=[]
+        real_scores = []
+        for x_new in xmin:
+            tree_vec, mol_vec = x_new.chunk(2,1)
+            #print(x_new.shape, tree_vec.shape, mol_vec.shape)
+            #print(x_new)
+            s=JT_model.decode(tree_vec, mol_vec)
+            if s is not None:
+                valid_smiles.append(s)
+                score = compute_mol_score(s)
+                y_new = score
+                print("new x score:", score)
+                scores.append(y_new)
+
+                X = torch.cat((model.train_inputs[0], x_new.to("cuda")),0) # incorporate new evaluation
+                y = torch.cat((model.train_targets, torch.tensor([y_new]).float().to("cuda")),0)
+
+        if iteration < max_iteration-1:
+            update_posterior(model, likelihood, X, y)
+        print(len(scores)," new molecules are found. Iteration-",iteration)
+        valid_s += valid_smiles
+        mol_score += scores
+        #save_object(valid_smiles, save_dir + "/valid_smiles{}.txt".format(iteration))
+        #save_object(scores, save_dir + "/scores{}.txt".format(iteration))
+    good_score = []
+    good_s = []
+    for i, s in enumerate(valid_s):
+        if "CCCCCCCCC" not in s and "C(C)(C)C(C)(C)C(C)(C)" not in s:
+            good_s.append(s)
+            good_score.append(mol_score[i])
+    return good_s, good_score
+
+
 def BayesianOpt(JT_model, model, likelihood, max_iteration = 50, device = "cuda"):
     lb = torch.min(model.train_inputs[0], dim = 0)[0]
     ub = torch.max(model.train_inputs[0], dim = 0)[0]
@@ -259,8 +390,13 @@ def BayesianOpt(JT_model, model, likelihood, max_iteration = 50, device = "cuda"
         mol_score += scores
         #save_object(valid_smiles, save_dir + "/valid_smiles{}.txt".format(iteration))
         #save_object(scores, save_dir + "/scores{}.txt".format(iteration))
-    return valid_s, mol_score
-
+    good_score = []
+    good_s = []
+    for i, s in enumerate(valid_s):
+        if "CCCCCCCCC" not in s and "C(C)(C)C(C)(C)C(C)(C)" not in s:
+            good_s.append(s)
+            good_score.append(mol_score[i])
+    return good_s, good_score
 
 from rdkit import Chem
 from rdkit.Chem import rdBase
