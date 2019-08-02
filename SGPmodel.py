@@ -24,6 +24,7 @@ class Sparse_GP():
         # Instantiate the model and move to cuda
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
         self.model = GPRegressionModel(self.X_train, self.y_train, self.likelihood, inducing_num).to(device)
+        self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
         # Use the adam optimizer
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.05)
         
@@ -32,7 +33,6 @@ class Sparse_GP():
         self.model.train()
         self.likelihood.train()
         # "Loss" for GPs - the marginal log likelihood
-        self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
 
         for i in range(training_iterations):
             # Zero backprop gradients
