@@ -188,11 +188,15 @@ def find_a_candidate_ei(model, likelihood, x_init, lb, ub, previous_best, device
     x = transform_to(constraint)(unconstrained_x)
     return x.detach()
 
-def next_x_ei(model, likelihood, X_train, lb, ub, num_candidates_each_x=5, num_x=60, device = "cuda"):
+def next_x_ei(model, likelihood, X_train, lb, ub, flag = True, num_candidates_each_x=5, num_x=60, device = "cuda"):
     found_x=[]
     lb = lb.to(device)
     ub = ub.to(device)
-    x_init = model.train_inputs[0][-1:].to(device)
+    if flag:
+        x_init = model.train_inputs[0][-1:].to(device)
+    else:
+        random_index = np.random.randint(0,len(model.train_inputs[0]))
+        x_init = model.train_inputs[0][random_index:random_index + 1].to(device)
     previous_best = torch.Tensor([0]).to(device)
     for i in range(20):
         previous_best = torch.min(previous_best, batched_evaluation(model.to(device), likelihood.to(device), X_train.to(device), i))
@@ -323,7 +327,11 @@ def BayesianOpt_ei(JT_model, model, likelihood, max_iteration = 50, device = "cu
     valid_s = []
     mol_score = []
     for iteration in range(max_iteration):
-        xmin = next_x_ei(model, likelihood, model.train_inputs[0], lb,ub,5,1, device)
+        if iteration == 0:
+            flag = False
+        else:
+            flag = True
+        xmin = next_x_ei(model, likelihood, model.train_inputs[0], lb,ub,flag,5,1, device)
         valid_smiles=[]
         scores=[]
         real_scores = []
@@ -364,7 +372,7 @@ def BayesianOpt(JT_model, model, likelihood, max_iteration = 50, device = "cuda"
     valid_s = []
     mol_score = []
     for iteration in range(max_iteration):
-        xmin = next_x(model, likelihood, lb,ub,5,1, device)
+        xmin = next_x(model, likelihood, lb,ub,5,60, device)
         valid_smiles=[]
         scores=[]
         real_scores = []
@@ -405,8 +413,9 @@ from rdkit.Chem.Draw import IPythonConsole
 from rdkit import RDConfig
 
 def draw_mol(valid_s):
+    print("Start drawing {} mols:".format(len(valid_s)))
     ms = []
     for smile in valid_s:
         ms.append(MolFromSmiles(smile))
-    img = Draw.MolsToGridImage(ms[:],molsPerRow=3,subImgSize=(300,200))
+    img = Draw.MolsToGridImage(ms[:],molsPerRow=3,subImgSize=(300,200),maxMols=500)
     return img
