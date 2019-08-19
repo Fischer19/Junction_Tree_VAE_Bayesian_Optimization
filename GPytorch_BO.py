@@ -11,13 +11,21 @@ parser.add_argument('-t', "--train_num", default = 1000)
 parser.add_argument("-e", "--ob_epoch", default = 60)
 parser.add_argument("-c", "--cuda", default = "0")
 parser.add_argument("-r", "--random_seed", default = 1)
+parser.add_argument("-v", "--vocab_path", default = "/home/ec2-user/ASAIL/jtnn_bo/jtnn/vocab.txt")
+parser.add_argument("-m", "--model_path", default = "model.iter-0-3000")
+parser.add_argument("-f", "--feature_dir", default = './bo/latent_features2.txt')
+parser.add_argument("-s", "--target_dir", default = './bo/targets2.txt')
+parser.add_argument("-o", "--output_dir", default = 'result/')
+
 args = parser.parse_args()
 
 random_seed = int(args.random_seed)
 training_num = int(args.train_num)
 ob_epoch = int(args.ob_epoch)
-feature_dir = './bo/latent_features2.txt'
-target_dir = './bo/targets2.txt'
+feature_dir = args.feature_dir
+target_dir = args.target_dir
+vocab_path = args.vocab_path
+model_path = args.model_path
 
 X = np.loadtxt(feature_dir)[:training_num]
 y = -np.loadtxt(target_dir)[:training_num]
@@ -52,8 +60,6 @@ print("Test RMSE: ", RMSE)
 '''
 
 # Load VAE model
-vocab_path = "/home/ec2-user/ASAIL/jtnn_bo/jtnn/vocab.txt"
-model_path = "model.iter-0-3000"
 JT_model = make_vae_model(vocab_path, model_path, device="cuda")
 
 # Start Bayesian optimization for 10 iterations
@@ -67,5 +73,5 @@ for epoch in range(ob_epoch):
     with gpytorch.settings.cg_tolerance(10), gpytorch.settings.max_cg_iterations(1500):
         valid_s, mol_score = BayesianOpt_ei(JT_model, SGP.model, SGP.likelihood, max_iteration=10)
         result.append((valid_s, mol_score))
-    save_object(result, "result/BO_50epoch_ei_t{}_e{}.dat".format(args.train_num, ob_epoch))
+    save_object(result, args.output_dir + "BO_50epoch_ei_t{}_e{}.dat".format(args.train_num, ob_epoch))
     
