@@ -2,6 +2,7 @@
 
 ## Required file:
 
+* `jtnn/` contains JTNN model codes
 * `vocab.txt` contains vocabulary list used for training JTNN
 * `model.iter` contains your pretrained JTNN model
 * `latent_features.txt` and  `targets.txt` contains the latent representations of your dataset and their corresponding target scores
