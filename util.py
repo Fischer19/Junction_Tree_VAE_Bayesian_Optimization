@@ -192,15 +192,16 @@ def next_x_ei(model, likelihood, X_train, lb, ub, flag = True, num_candidates_ea
     found_x=[]
     lb = lb.to(device)
     ub = ub.to(device)
-    if flag:
-        x_init = model.train_inputs[0][-1:].to(device)
+    if flag != -1:
+        x_init = model.train_inputs[0][-1 - flag::flag+1].to(device)
     else:
         random_index = np.random.randint(0,len(model.train_inputs[0]))
         x_init = model.train_inputs[0][random_index:random_index + 1].to(device)
+        #x_init = model.train_inputs[0][-1:].new_empty(1,56).uniform_(0, 1).mul(ub-lb).add_(lb).to(device)
     previous_best = torch.Tensor([0]).to(device)
     for i in range(20):
         previous_best = torch.min(previous_best, batched_evaluation(model.to(device), likelihood.to(device), X_train.to(device), i))
-    print("previous best:", previous_best)
+    #print("previous best:", previous_best)
     
     for j in range(num_x):
         candidates = []
@@ -208,20 +209,22 @@ def next_x_ei(model, likelihood, X_train, lb, ub, flag = True, num_candidates_ea
         for i in range(num_candidates_each_x):
             x = find_a_candidate_ei(model, likelihood, x_init, lb, ub, previous_best, device)
             y = log_expected_improvement(model, likelihood, x, previous_best, device)
-            candidates.append(x)
-            values.append(y)
+            candidates.append(x.to("cpu"))
+            values.append(y.to("cpu"))
             # require another random initialization
             random_index = np.random.randint(0,len(model.train_inputs[0]))
-            x_init = model.train_inputs[0][random_index:random_index + 1].to(device)
+            #x_init = model.train_inputs[0][random_index:random_index + 1].to(device)
+            x_init =  model.train_inputs[0][-1:].new_empty(1,56).uniform_(0,1).mul(ub-lb).add_(lb).to(device)
         new_values = torch.cat(values)
         new_values[torch.isnan(new_values)] = 1000.
         argmin = torch.min(new_values, dim=0)[1].item()
         min_score = torch.min(new_values, dim=0)[0].item()
-        print("min_score:", min_score)
-        found_x.append(candidates[argmin])
+        #print("min_score:", min_score)
+        found_x.append(candidates[argmin].to(device))
         #x_init=found_x[-1]
         random_index = np.random.randint(0,len(model.train_inputs[0]))
         x_init = model.train_inputs[0][random_index:random_index + 1].to(device)
+        #x_init = model.train_inputs[0][-1:].new_empty(1,56).uniform_(0, 1).mul(ub-lb).add_(lb).to(device)
     return found_x
 
 # Inner BO loop
@@ -327,11 +330,14 @@ def BayesianOpt_ei(JT_model, model, likelihood, max_iteration = 50, device = "cu
     valid_s = []
     mol_score = []
     for iteration in range(max_iteration):
+        flag = 0
         if iteration == 0:
-            flag = False
-        else:
-            flag = True
-        xmin = next_x_ei(model, likelihood, model.train_inputs[0], lb,ub,flag,5,1, device)
+            flag = -1
+        xmin = []
+        for i in range(1):
+            if iteration != 0:
+                flag = i
+            xmin += next_x_ei(model, likelihood, model.train_inputs[0], lb,ub,flag,5,1, device)        
         valid_smiles=[]
         scores=[]
         real_scores = []
