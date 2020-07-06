@@ -1,4 +1,7 @@
-# JTNN_BO
+# Bayesian Optimization in Junction Tree Variantional Autoencoder latent space.
+
+Implementation of [Junction Tree Variational Autoencoder for Molecular Graph Generation](https://arxiv.org/abs/1802.04364) latent space Bayesian optimization using [GPytorch](https://gpytorch.ai/) and [DGL](https://www.dgl.ai/).
+
 
 ## Required file:
 
